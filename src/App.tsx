@@ -5,7 +5,7 @@ import './App.css'
 import * as astrocite from 'astrocite-bibtex';
 import { type Bibliography, type CitationItem, type ReferenceItem } from './bibliography';
 import {CSL} from "./vendor/citeproc_commonjs.js"
-import _ from "lodash"
+import _, { groupBy } from "lodash"
 
 const h = React.createElement;
 
@@ -53,6 +53,11 @@ const styles:{name: string, nicename:string, url:string}[] = [
 	}
 ];
 
+type CiteProcCluster = [
+	{bibchange: boolean, citation_erros:any[]},
+	[number/*?*/, string/*HTML*/, string/*generated citationid*/]
+];
+
 function App() {
 	const [text, setText] = useState(`Oliver Sacks író és neurológus, a magyar nyelven is elérhető 
 _A férfi, aki kalapnak nézte a feleségét_ és az _Antropológus a Marson_ című 
@@ -67,7 +72,10 @@ könyveiben pácienseinek különös neurológiai zavaraival foglalkozik.
 			[
 				{
 					"citationID":"SXDNEKR5AD",
-					"citationItems":[{"id":"balaraman_1962"}],
+					"citationItems":[
+						{"id":"balaraman_1962"},
+						{"id":"biederman_1987"}
+					],
 					"properties":{"noteIndex":0}
 				},
 				[],
@@ -77,11 +85,17 @@ könyveiben pácienseinek különös neurológiai zavaraival foglalkozik.
 		return JSON.parse(xhr.responseText);
 	}
 
-	const [citations, setCitations] = useState<any[]>(makeDummyCitations());
+	/* state */
+	const [sourceCitations, setSourceCitations] = useState<any[]>(makeDummyCitations());
 	const [references, setReferences] = useState<ReferenceItem[]>([]);
 	const [styleXMLString, setStyleXMLString] = useState<string|null>(null);
+
+	/* computed */
 	const [selectedStyleName, setSelectedStyleName] = useState<string>("jm-chicago-fullnote-bibliography");
 	const [citeMode, setCiteMode] = useState<"note" | "in-text">("note")
+
+	const [bibliography, setBibliography] = useState<{ref_id:string, html:string}[]>([]);
+	const [citationClusters, setCitationClusters] = useState<{cit_id:string, html:string}[]>([]);
 
 	function footnoteOrInTextStyle():("note"|"in-text"){
 		return "note";
@@ -112,6 +126,7 @@ könyveiben pácienseinek különös neurológiai zavaraival foglalkozik.
 
 	const citeproc = useRef<any>(null)
 	useEffect(()=>{
+		console.log("effect1")
 		if(!references || !styleXMLString){
 			return;
 		}
@@ -129,34 +144,44 @@ könyveiben pácienseinek különös neurológiai zavaraival foglalkozik.
 				return references[itemIdx];
 			}
 		}, styleXMLString);
-		citeproc.current.updateItems(references.map(ref=>ref.id));
-		console.log("citeproc updated")
-		window.citeproc = citeproc.current
-		setCiteMode(citeproc.current.opt.class);
+		// citeproc.current.updateItems(references.map(ref=>ref.id));
+		// console.log("citeproc updated")
+		// window.citeproc = citeproc.current
+		// setCiteMode(citeproc.current.opt.class);
 	}, [references, styleXMLString])
 
-	/* process citation and bibliography */
-	function getBibliographyItems():{ref:string, bib:string}[] | null{
+	useEffect(()=>{
+		console.log("effect2")
 		if(!citeproc.current){
-			return null;
+			return;
 		}
+		
+		// process citations
 
-		const result = _.zip(references, citeproc.current.makeBibliography()[1])
-			.map( ([ref, bib])=>{
-				return {ref, bib};
-			} );
+		const clusters = sourceCitations.map(citation=>{
+			return citeproc.current.processCitationCluster(citation[0], citation[1], []);
+		});
 
-		return result;
-	}
+		setCitationClusters(clusters.map(cluster=>{
+			const {bibchange, citation_errors} = cluster[0];
+			const [_, html, cit_id] = cluster[1];
+			return {cit_id, html};
+		}))
 
-	function getCitationCluster(citationParams){
-		if(!citeproc.current){
-			return null;
-		}
-		const citationCluster = citeproc.current.processCitationCluster(citationParams[0], citationParams[1], []);
-		return citationCluster;
-	}
-	
+		// make bibliography
+		const bib = citeproc.current.makeBibliography();
+		console.group("process all citations and bibliography");
+		console.log("clusters:", clusters)
+		console.log("bibliography:", bib);
+		console.groupEnd();
+
+		setBibliography(_.zip(bib[0].entry_ids, bib[1]).map( ([ref_id, html])=>{
+			return {ref_id, html};
+		}));
+
+		// generate bibliography
+	}, [sourceCitations, references, styleXMLString])
+
 	return (
 		<>
 		<div>
@@ -165,60 +190,22 @@ könyveiben pácienseinek különös neurológiai zavaraival foglalkozik.
 		<div>
 			<select id="citation-styles" value={selectedStyleName} onChange={e=>setSelectedStyleName(e.target.value)}>
 				{styles.map(style=>(
-					<option value={style.name}>{style.nicename}</option>
+					<option key={style.name} value={style.name}>{style.nicename}</option>
 				))}
 			</select>
-			{citeMode}
-			{citeMode=="in-text" ? (
-				<div>
-					<h2>In-text citations</h2>
-					<ul>
-					{citations.map( (citation, idx)=>{
-						console.log("citation", citation)
-						const citationCluster = getCitationCluster(citation);
-						if(!citationCluster){
-							return "";
-						}
-						const [_, citationStrings] = citationCluster;
-						const [n, citationText, citationID] = citationStrings;
-						return (<li key={idx}>
-							<p>{`${citationCluster[1][0][1]}`}</p>
-						</li>)
-					})}
-					</ul>
-				</div>
-			) : ""}
-			{citeMode=="note" ? (
-				<div>
-					<h2>Footnotes</h2>
-					<ul>
-					{citations.map( (citation, idx)=>{
-						const citationCluster = getCitationCluster(citation);
-						if(!citationCluster){
-							return "";
-						}
-						const [_, citationStrings] = citationCluster;
-						const [n, citationText, citationID] = citationStrings;
-						return (<li key={idx}>
-							{/* <p>{`${citation} ${citation.id}`}</p> */}
-							{/* <p>{`bibchange: ${getCitationCluster(citation)?getCitationCluster(citation)[0].bibchange:""}`}</p> */}
-							<p dangerouslySetInnerHTML={{__html: `${citationCluster[1][0][1]}`}}></p>
-						</li>)
-					})}
-					</ul>
-				</div>
-			) : ""}
+			<div>
+				<h2>Citation clusters</h2>
+				{!citationClusters || citationClusters.map(item=>(
+					<div key={item.cit_id} dangerouslySetInnerHTML={{__html: `@${item.cit_id}${item.html}`}}></div>
+				))}
+			</div>
 			<div>
 				<h2>Bibliography</h2>
-				<ul>
-					{getBibliographyItems()?.map( (item, idx)=>(
-						<li key={idx}>
-							<span>{`[@${item.ref.id}]`}</span>
-							<span dangerouslySetInnerHTML={ {__html: item.bib} }></span>
-						</li>
-					))}
-				</ul>
+				{!bibliography || bibliography.map(item=>(
+					<div key={item.ref_id} dangerouslySetInnerHTML={{__html: `@${item.ref_id}${item.html}`}}></div>
+				))}
 			</div>
+			
 		</div>
 		</>
 	)
